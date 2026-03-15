@@ -17,7 +17,7 @@
  * along with ProtonVPN.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-package com.protonvpn.app.mmp.referrer.usecases
+package com.sweetdatavpn.app.mmp.referrer.usecases
 
 import com.protonvpn.android.mmp.FakeIsMmpFeatureFlagEnabled
 import com.protonvpn.android.mmp.referrer.data.MmpReferrerStorage
